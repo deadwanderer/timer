@@ -13,6 +13,8 @@ DEFAULT_MONITOR: i32 : 1
 DEFAULT_TIMER_HOUR :: 10
 DEFAULT_TIMER_MINUTE :: 25
 DEFAULT_WARNING_MINUTES :: 5
+DEFAULT_END_TIMER_RINGS :: 2
+DEFAULT_END_TIMER_SECONDS :: 2
 DEFAULT_TIMER_AUDIO_FILE: string : "Bell1.wav"
 DEFAULT_FONT_TTF_FILE: string : "RobotoMedium.ttf"
 DEFAULT_FONT_SIZE: i32 : 72
@@ -36,6 +38,8 @@ Options :: struct {
 	monitor:                     i32,
 	timer_end:                   time.Time,
 	warning_minutes:             int,
+	end_timer_rings:             int,
+	end_timer_seconds:           int,
 	font_size:                   i32,
 	warning_font_size:           i32,
 	font_spacing:                f32,
@@ -50,6 +54,7 @@ warning_time: time.Duration
 render_target: rl.RenderTexture2D
 timer_font: rl.Font
 timer_warning_font: rl.Font
+timer_sound: rl.Sound
 
 load_ini_file :: proc() -> (Options, bool) {
 	fileerr: os.Errno
@@ -155,11 +160,11 @@ load_ini_file :: proc() -> (Options, bool) {
 			}
 		case "path_to_timer_audio_file":
 			{
-				options.path_to_timer_audio_file = v
+				options.path_to_timer_audio_file = strings.clone(v)
 			}
 		case "path_to_timer_font_ttf_file":
 			{
-				options.path_to_timer_font_ttf_file = v
+				options.path_to_timer_font_ttf_file = strings.clone(v)
 			}
 		case "font_size":
 			{
@@ -176,6 +181,14 @@ load_ini_file :: proc() -> (Options, bool) {
 		case "edge_margin_pixels":
 			{
 				options.edge_margin_pixels = i32(strconv.atoi(v))
+			}
+		case "end_timer_rings":
+			{
+				options.end_timer_rings = strconv.atoi(v)
+			}
+		case "end_timer_seconds":
+			{
+				options.end_timer_seconds = strconv.atoi(v)
 			}
 		case:
 			{
@@ -244,6 +257,12 @@ update_timer_options :: proc(options: Options, first_time: bool = false) {
 	if options.warning_minutes != timer_options.warning_minutes {
 		timer_options.warning_minutes = options.warning_minutes
 	}
+	if options.end_timer_rings != timer_options.end_timer_rings {
+		timer_options.end_timer_rings = options.end_timer_rings
+	}
+	if options.end_timer_seconds != timer_options.end_timer_seconds {
+		timer_options.end_timer_seconds = options.end_timer_seconds
+	}
 	warning_time = time.Duration(i64(timer_options.warning_minutes) * i64(time.Minute))
 
 	// Skip Raylib reconfiguration on first time, since Raylib hasn't been initialized yet
@@ -267,17 +286,26 @@ update_timer_options :: proc(options: Options, first_time: bool = false) {
 			)
 		}
 		if reload_audio {
-
+			timer_sound = rl.LoadSound(
+				strings.unsafe_string_to_cstring(timer_options.path_to_timer_audio_file),
+			)
 		}
 	}
 }
 
 draw_timer :: proc() -> bool {
+	zero_time := (1 * time.Second) - (1 * time.Nanosecond)
 	now := time.now()
 	diff := time.diff(now, timer_options.timer_end)
-	is_warning := diff <= warning_time
-	// fmt.printfln("Diff: %v, Warning: %v, IsWarning: %v", diff, warning_time, is_warning)
+	is_warning := diff <= (warning_time + zero_time)
+	is_done := diff <= zero_time
+	
 	hours, minutes, seconds := time.clock(diff)
+	if is_done {
+		hours = 0
+		minutes = 0
+		seconds = 0
+	}
 	timer_text: string
 	if hours > 0 {
 		timer_text = fmt.tprintf("%d:%02d:%02d", hours, minutes, seconds)
@@ -329,55 +357,56 @@ draw_timer :: proc() -> bool {
 	}
 	rl.SetWindowPosition(window_x, window_y)
 
+	@(static)
+	final_draw := false
+
 	texture_width := i32(font_size[0]) + timer_options.edge_margin_pixels
 	texture_height := i32(font_size[1]) + timer_options.edge_margin_pixels
-	if texture_width != render_target.texture.width ||
-	   texture_height != render_target.texture.height {
-		rl.SetWindowSize(texture_width, texture_height)
-		rl.UnloadRenderTexture(render_target)
-		render_target = rl.LoadRenderTexture(texture_width, texture_height)
-		rl.SetTextureFilter(render_target.texture, .BILINEAR)
-	}
 
-	rl.BeginTextureMode(render_target)
-	rl.ClearBackground(rl.BLANK)
-	texture_position: rl.Vector2
-	switch timer_options.position {
-	case .TopLeft:
-		{
-			texture_position = {
-				f32(timer_options.edge_margin_pixels),
-				f32(timer_options.edge_margin_pixels),
+	if !final_draw {
+		if texture_width != render_target.texture.width ||
+		   texture_height != render_target.texture.height {
+			rl.SetWindowSize(texture_width, texture_height)
+			rl.UnloadRenderTexture(render_target)
+			render_target = rl.LoadRenderTexture(texture_width, texture_height)
+			rl.SetTextureFilter(render_target.texture, .BILINEAR)
+		}
+
+		rl.BeginTextureMode(render_target)
+		rl.ClearBackground(rl.BLANK)
+		texture_position: rl.Vector2
+		switch timer_options.position {
+		case .TopLeft:
+			{
+				texture_position = {f32(timer_options.edge_margin_pixels), 0}
+			}
+		case .TopRight:
+			{
+				texture_position = {0, 0}
+			}
+		case .BottomLeft:
+			{
+				texture_position = {
+					f32(timer_options.edge_margin_pixels),
+					f32(timer_options.edge_margin_pixels),
+				}
+			}
+		case .BottomRight:
+			{
+				texture_position = {0, f32(timer_options.edge_margin_pixels)}
 			}
 		}
-	case .TopRight:
-		{
-			texture_position = {0, f32(timer_options.edge_margin_pixels)}
-		}
-	case .BottomLeft:
-		{
-			texture_position = {f32(timer_options.edge_margin_pixels), 0}
-		}
-	case .BottomRight:
-		{
-			texture_position = {0, 0}
-		}
+
+		rl.DrawTextEx(
+			is_warning ? timer_warning_font : timer_font,
+			strings.unsafe_string_to_cstring(timer_text),
+			texture_position,
+			is_warning ? f32(timer_options.warning_font_size) : f32(timer_options.font_size),
+			timer_options.font_spacing,
+			is_warning ? rl.RED : rl.WHITE,
+		)
+		rl.EndTextureMode()
 	}
-	// fmt.printfln(
-	// 	"Window: %v, Texture: %v",
-	// 	rl.Vector2{f32(window_x), f32(window_y)},
-	// 	rl.Vector2{f32(texture_width), f32(texture_height)},
-	// )
-	rl.DrawTextEx(
-		is_warning ? timer_warning_font : timer_font,
-		strings.unsafe_string_to_cstring(timer_text),
-		texture_position,
-		is_warning ? f32(timer_options.warning_font_size) : f32(timer_options.font_size),
-		timer_options.font_spacing,
-		// rl.WHITE,
-		is_warning ? rl.RED : rl.WHITE,
-	)
-	rl.EndTextureMode()
 
 	rl.BeginDrawing()
 	rl.ClearBackground(rl.BLANK)
@@ -391,11 +420,46 @@ draw_timer :: proc() -> bool {
 	)
 	rl.EndDrawing()
 
+	@(static)
+	warning_sound_was_played := false
+	if is_warning && !warning_sound_was_played {
+		warning_sound_was_played = true
+		rl.PlaySound(timer_sound)
+	}
+
+	@(static)
+	done_stopwatch: time.Stopwatch
+	@(static)
+	num_rings := 0
+	end_timer_delay :=
+		(time.Duration(timer_options.end_timer_seconds + 1) * time.Second) -
+		(1 * time.Second - 1 * time.Nanosecond)
+	if final_draw {
+		if time.stopwatch_duration(done_stopwatch) >= end_timer_delay {
+			rl.PlaySound(timer_sound)
+			num_rings += 1
+			if num_rings == timer_options.end_timer_rings {
+				return false
+			}
+			time.stopwatch_reset(&done_stopwatch)
+			time.stopwatch_start(&done_stopwatch)
+		}
+	}
+
+	if is_done && !final_draw {
+		final_draw = true
+		rl.PlaySound(timer_sound)
+		num_rings += 1
+		time.stopwatch_start(&done_stopwatch)
+	}
+
+
 	return true
 }
 
 // TODO: INI loading
 main :: proc() {
+	// Configure timer and load options file
 	now := time.now()
 	default_timer_end, _ := time.components_to_time(
 		time.year(now),
@@ -409,6 +473,7 @@ main :: proc() {
 		position                    = DEFAULT_WINDOW_POSITION,
 		timer_end                   = default_timer_end,
 		warning_minutes             = DEFAULT_WARNING_MINUTES,
+		end_timer_seconds           = DEFAULT_END_TIMER_SECONDS,
 		path_to_timer_audio_file    = DEFAULT_TIMER_AUDIO_FILE,
 		path_to_timer_font_ttf_file = DEFAULT_FONT_TTF_FILE,
 		font_size                   = DEFAULT_FONT_SIZE,
@@ -424,23 +489,26 @@ main :: proc() {
 	}
 	update_timer_options(loaded_options, true)
 
-	// fmt.printfln("End Time: %v:%v %v", time.clock(end_time))
-	// fmt.printfln("Warning Time: %v:%v %v", time.clock(warning_time))
 	current_time := time.diff(now, timer_options.timer_end)
 	if current_time < 0 {
 		fmt.eprintln("End time has already passed!")
 		return
 	}
 
+	// Open window
 	rl.SetConfigFlags({.WINDOW_TRANSPARENT, .MSAA_4X_HINT, .WINDOW_HIDDEN})
 	rl.SetTraceLogLevel(.ERROR)
 	rl.InitWindow(640, 480, "Timer")
+	defer rl.CloseWindow()
 	rl.SetWindowState({.WINDOW_UNDECORATED})
 
+	// Configure render texture
 	render_target = rl.LoadRenderTexture(640, 480)
+	defer rl.UnloadRenderTexture(render_target)
 	rl.SetTextureFilter(render_target.texture, .BILINEAR)
-	rl.SetTargetFPS(10)
+	rl.SetTargetFPS(60)
 
+	// Load fonts
 	timer_font = rl.LoadFontEx(
 		strings.unsafe_string_to_cstring(timer_options.path_to_timer_font_ttf_file),
 		timer_options.font_size,
@@ -453,9 +521,21 @@ main :: proc() {
 		nil,
 		0,
 	)
+
+	// Init audio device and load audio
+	rl.InitAudioDevice()
+	defer rl.CloseAudioDevice()
+
+	assert(rl.IsAudioDeviceReady())
+	timer_sound = rl.LoadSound(
+		strings.unsafe_string_to_cstring(timer_options.path_to_timer_audio_file),
+	)
+
+	// First draw
 	draw_timer()
 	rl.ClearWindowState({.WINDOW_HIDDEN})
 
+	// Application loop
 	for draw_timer() && !rl.WindowShouldClose() {
 		success := check_reload_ini_file()
 		if !success {
@@ -465,6 +545,6 @@ main :: proc() {
 
 		free_all(context.temp_allocator)
 	}
-	rl.UnloadRenderTexture(render_target)
-	rl.CloseWindow()
+	for rl.IsSoundPlaying(timer_sound) {
+	}
 }
