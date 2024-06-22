@@ -59,6 +59,10 @@ timer_font: rl.Font
 timer_warning_font: rl.Font
 timer_sound: rl.Sound
 blur_shader: rl.Shader
+outline_shader: rl.Shader
+outlineSizeLoc: rl.ShaderLocationIndex
+outlineColorLoc: rl.ShaderLocationIndex
+outlineTextureSizeLoc: rl.ShaderLocationIndex
 
 load_ini_file :: proc() -> (Options, bool) {
 	fileerr: os.Errno
@@ -391,8 +395,8 @@ draw_timer :: proc() -> bool {
 	@(static)
 	final_draw := false
 
-	texture_width := i32(font_size[0]) + timer_options.edge_margin_pixels
-	texture_height := i32(font_size[1]) + timer_options.edge_margin_pixels
+	texture_width := i32(font_size[0]) //+ timer_options.edge_margin_pixels
+	texture_height := i32(font_size[1]) //+ timer_options.edge_margin_pixels
 
 	if !final_draw {
 		if texture_width != render_target.texture.width ||
@@ -404,6 +408,8 @@ draw_timer :: proc() -> bool {
 			shadow_target = rl.LoadRenderTexture(texture_width, texture_height)
 			rl.SetTextureFilter(render_target.texture, .ANISOTROPIC_4X)
 			rl.SetTextureFilter(shadow_target.texture, .POINT)
+			rl.SetTextureWrap(render_target.texture, .CLAMP)
+			rl.SetTextureWrap(shadow_target.texture, .CLAMP)
 		}
 
 		texture_position: rl.Vector2
@@ -429,60 +435,45 @@ draw_timer :: proc() -> bool {
 			}
 		}
 
-		rl.BeginTextureMode(shadow_target)
-		rl.ClearBackground(rl.BLANK)
-		rl.BeginBlendMode(.ADDITIVE)
-		offset: rl.Vector2
-		for x in -1 ..= 1 {
-			for y in -1 ..= 1 {
-				if y == 0 && x == 0 {continue}
-				offset = {f32(x), f32(y)}
-				offset = rl.Vector2Normalize(offset)
-				offset = {
-					offset.x * timer_options.shadow_thickness,
-					offset.y * timer_options.shadow_thickness,
-				}
+		// rl.BeginTextureMode(shadow_target)
+		// rl.ClearBackground(rl.BLANK)
+		// rl.BeginBlendMode(.ADDITIVE)
+		// offset: rl.Vector2
+		// for x in -1 ..= 1 {
+		// 	for y in -1 ..= 1 {
+		// 		if y == 0 && x == 0 {continue}
+		// 		offset = {f32(x), f32(y)}
+		// 		offset = rl.Vector2Normalize(offset)
+		// 		offset = {
+		// 			offset.x * timer_options.shadow_thickness,
+		// 			offset.y * timer_options.shadow_thickness,
+		// 		}
 
-				rl.DrawTextEx(
-					is_warning ? timer_warning_font : timer_font,
-					strings.unsafe_string_to_cstring(timer_text),
-					texture_position + offset,
-					is_warning \
-					? f32(timer_options.warning_font_size) \
-					: f32(timer_options.font_size),
-					timer_options.font_spacing,
-					rl.BLACK,
-				)
-			}
-		}
-		rl.EndBlendMode()
-		rl.EndTextureMode()
+		// 		rl.DrawTextEx(
+		// 			is_warning ? timer_warning_font : timer_font,
+		// 			strings.unsafe_string_to_cstring(timer_text),
+		// 			texture_position + offset,
+		// 			is_warning \
+		// 			? f32(timer_options.warning_font_size) \
+		// 			: f32(timer_options.font_size),
+		// 			timer_options.font_spacing,
+		// 			rl.BLACK,
+		// 		)
+		// 	}
+		// }
+		// rl.EndBlendMode()
+		// rl.EndTextureMode()
 
 		rl.BeginTextureMode(render_target)
 		rl.ClearBackground(rl.BLANK)
-		renderWidth := f32(shadow_target.texture.width)
-		renderHeight := f32(shadow_target.texture.height)
-		// rl.BeginShaderMode(blur_shader)
-		// rl.SetShaderValue(
-		// 	blur_shader,
-		// 	rl.GetShaderLocation(blur_shader, "renderWidth"),
-		// 	&renderWidth,
-		// 	.FLOAT,
+		// rl.DrawTexturePro(
+		// 	shadow_target.texture,
+		// 	{0, 0, renderWidth, -renderHeight},
+		// 	{0, 0, f32(texture_width), f32(texture_height)},
+		// 	{0, 0},
+		// 	0,
+		// 	rl.BLACK,
 		// )
-		// rl.SetShaderValue(
-		// 	blur_shader,
-		// 	rl.GetShaderLocation(blur_shader, "renderHeight"),
-		// 	&renderHeight,
-		// 	.FLOAT,
-		// )
-		rl.DrawTexturePro(
-			shadow_target.texture,
-			{0, 0, renderWidth, -renderHeight},
-			{0, 0, f32(texture_width), f32(texture_height)},
-			{0, 0},
-			0,
-			rl.BLACK,
-		)
 		rl.DrawTextEx(
 			is_warning ? timer_warning_font : timer_font,
 			strings.unsafe_string_to_cstring(timer_text),
@@ -495,8 +486,14 @@ draw_timer :: proc() -> bool {
 		rl.EndTextureMode()
 	}
 
+	black: [4]f32 = {0, 0, 0, 1}
+	texSize: rl.Vector2 = {f32(texture_width), f32(texture_height)}
 	rl.BeginDrawing()
 	rl.ClearBackground(rl.BLANK)
+	rl.SetShaderValue(outline_shader, outlineSizeLoc, &timer_options.shadow_thickness, .FLOAT)
+	rl.SetShaderValue(outline_shader, outlineColorLoc, &black, .VEC4)
+	rl.SetShaderValue(outline_shader, outlineTextureSizeLoc, &texSize, .VEC2)
+	rl.BeginShaderMode(outline_shader)
 	rl.DrawTexturePro(
 		render_target.texture,
 		{0, 0, f32(render_target.texture.width), f32(-render_target.texture.height)},
@@ -505,6 +502,7 @@ draw_timer :: proc() -> bool {
 		0,
 		rl.WHITE,
 	)
+	rl.EndShaderMode()
 	rl.EndDrawing()
 
 	@(static)
@@ -606,6 +604,8 @@ main :: proc() {
 	defer rl.UnloadRenderTexture(shadow_target)
 	rl.SetTextureFilter(render_target.texture, .ANISOTROPIC_4X)
 	rl.SetTextureFilter(shadow_target.texture, .POINT)
+	rl.SetTextureWrap(render_target.texture, .CLAMP)
+	rl.SetTextureWrap(shadow_target.texture, .CLAMP)
 	rl.SetTargetFPS(60)
 
 	// Load fonts
@@ -622,6 +622,13 @@ main :: proc() {
 		0,
 	)
 	blur_shader = rl.LoadShader(nil, "blur.fs")
+	outline_shader = rl.LoadShader(nil, "outline.fs")
+	if !rl.IsShaderReady(outline_shader) {
+		fmt.eprintf("Outline shader failed to load...\n")
+	}
+	outlineTextureSizeLoc = rl.GetShaderLocation(outline_shader, "textureSize")
+	outlineSizeLoc = rl.GetShaderLocation(outline_shader, "outlineSize")
+	outlineColorLoc = rl.GetShaderLocation(outline_shader, "outlineColor")
 
 	// Init audio device and load audio
 	rl.InitAudioDevice()
