@@ -9,7 +9,7 @@ import "core:time"
 import rl "vendor:raylib"
 
 DEFAULT_WINDOW_POSITION :: WindowPosition.TopRight
-DEFAULT_MONITOR: i32 : 1
+DEFAULT_MONITOR: i32 : 0
 DEFAULT_TIMER_HOUR :: 10
 DEFAULT_TIMER_MINUTE :: 25
 DEFAULT_WARNING_MINUTES :: 5
@@ -21,6 +21,7 @@ DEFAULT_FONT_SIZE: i32 : 72
 DEFAULT_WARNING_FONT_SIZE: i32 : 80
 DEFAULT_FONT_SPACING: f32 : 2
 DEFAULT_EDGE_BUFFER_PIXELS: i32 : 10
+DEFAULT_SHADOW_THICKNESS: f32 : 5
 
 UTC_OFFSET :: -4
 
@@ -44,6 +45,7 @@ Options :: struct {
 	warning_font_size:           i32,
 	font_spacing:                f32,
 	edge_margin_pixels:          i32,
+	shadow_thickness:            f32,
 	path_to_timer_audio_file:    string,
 	path_to_timer_font_ttf_file: string,
 }
@@ -52,9 +54,11 @@ timer_options: Options
 ini_file_time: os.File_Time
 warning_time: time.Duration
 render_target: rl.RenderTexture2D
+shadow_target: rl.RenderTexture2D
 timer_font: rl.Font
 timer_warning_font: rl.Font
 timer_sound: rl.Sound
+blur_shader: rl.Shader
 
 load_ini_file :: proc() -> (Options, bool) {
 	fileerr: os.Errno
@@ -133,10 +137,10 @@ load_ini_file :: proc() -> (Options, bool) {
 					}
 				}
 			}
-		case "monitor":
-			{
-				options.monitor = i32(strconv.atoi(v))
-			}
+		// case "monitor":
+		// 	{
+		// 		options.monitor = i32(strconv.atoi(v))
+		// 	}
 		case "timer_end_in_military_time":
 			{
 				val := i32(strconv.atoi(v))
@@ -182,6 +186,10 @@ load_ini_file :: proc() -> (Options, bool) {
 			{
 				options.edge_margin_pixels = i32(strconv.atoi(v))
 			}
+		case "shadow_thickness":
+			{
+				options.shadow_thickness = f32(strconv.atof(v))
+			}
 		case "end_timer_rings":
 			{
 				options.end_timer_rings = strconv.atoi(v)
@@ -221,14 +229,17 @@ update_timer_options :: proc(options: Options, first_time: bool = false) {
 	reload_font := false
 	reload_warning_font := false
 	reload_audio := false
+	// update_monitor := false
+
+	// fmt.printfln("Current monitor: %v", rl.GetCurrentMonitor())
 
 	if options.position != timer_options.position {
 		timer_options.position = options.position
 	}
-	if options.monitor != timer_options.monitor {
-		timer_options.monitor = options.monitor
-		rl.SetWindowMonitor(timer_options.monitor)
-	}
+	// if options.monitor != timer_options.monitor {
+	// 	timer_options.monitor = options.monitor
+	// 	update_monitor = true
+	// }
 	if options.path_to_timer_audio_file != timer_options.path_to_timer_audio_file {
 		timer_options.path_to_timer_audio_file = options.path_to_timer_audio_file
 		reload_audio = true
@@ -251,8 +262,25 @@ update_timer_options :: proc(options: Options, first_time: bool = false) {
 	if options.edge_margin_pixels != timer_options.edge_margin_pixels {
 		timer_options.edge_margin_pixels = options.edge_margin_pixels
 	}
+	if options.shadow_thickness != timer_options.shadow_thickness {
+		timer_options.shadow_thickness = options.shadow_thickness
+	}
+
 	if time.diff(timer_options.timer_end, options.timer_end) != 0 {
-		timer_options.timer_end = options.timer_end
+		now := time.now()
+		ok: bool
+		hr, mn, sc := time.clock(options.timer_end)
+		new_end := options.timer_end
+		if time.diff(now, options.timer_end) < 0 {
+			new_end, ok = time.components_to_time(
+				time.year(now),
+				time.month(now),
+				time.day(now) + 1, // (24 * time.Hour),
+				hr,
+				mn,
+				sc,
+			)}
+		timer_options.timer_end = new_end
 	}
 	if options.warning_minutes != timer_options.warning_minutes {
 		timer_options.warning_minutes = options.warning_minutes
@@ -290,6 +318,9 @@ update_timer_options :: proc(options: Options, first_time: bool = false) {
 				strings.unsafe_string_to_cstring(timer_options.path_to_timer_audio_file),
 			)
 		}
+		// if update_monitor {			
+		// rl.SetWindowMonitor(timer_options.monitor)
+		// }
 	}
 }
 
@@ -299,7 +330,7 @@ draw_timer :: proc() -> bool {
 	diff := time.diff(now, timer_options.timer_end)
 	is_warning := diff <= (warning_time + zero_time)
 	is_done := diff <= zero_time
-	
+
 	hours, minutes, seconds := time.clock(diff)
 	if is_done {
 		hours = 0
@@ -368,12 +399,13 @@ draw_timer :: proc() -> bool {
 		   texture_height != render_target.texture.height {
 			rl.SetWindowSize(texture_width, texture_height)
 			rl.UnloadRenderTexture(render_target)
+			rl.UnloadRenderTexture(shadow_target)
 			render_target = rl.LoadRenderTexture(texture_width, texture_height)
-			rl.SetTextureFilter(render_target.texture, .BILINEAR)
+			shadow_target = rl.LoadRenderTexture(texture_width, texture_height)
+			rl.SetTextureFilter(render_target.texture, .ANISOTROPIC_4X)
+			rl.SetTextureFilter(shadow_target.texture, .POINT)
 		}
 
-		rl.BeginTextureMode(render_target)
-		rl.ClearBackground(rl.BLANK)
 		texture_position: rl.Vector2
 		switch timer_options.position {
 		case .TopLeft:
@@ -397,6 +429,60 @@ draw_timer :: proc() -> bool {
 			}
 		}
 
+		rl.BeginTextureMode(shadow_target)
+		rl.ClearBackground(rl.BLANK)
+		rl.BeginBlendMode(.ADDITIVE)
+		offset: rl.Vector2
+		for x in -1 ..= 1 {
+			for y in -1 ..= 1 {
+				if y == 0 && x == 0 {continue}
+				offset = {f32(x), f32(y)}
+				offset = rl.Vector2Normalize(offset)
+				offset = {
+					offset.x * timer_options.shadow_thickness,
+					offset.y * timer_options.shadow_thickness,
+				}
+
+				rl.DrawTextEx(
+					is_warning ? timer_warning_font : timer_font,
+					strings.unsafe_string_to_cstring(timer_text),
+					texture_position + offset,
+					is_warning \
+					? f32(timer_options.warning_font_size) \
+					: f32(timer_options.font_size),
+					timer_options.font_spacing,
+					rl.BLACK,
+				)
+			}
+		}
+		rl.EndBlendMode()
+		rl.EndTextureMode()
+
+		rl.BeginTextureMode(render_target)
+		rl.ClearBackground(rl.BLANK)
+		renderWidth := f32(shadow_target.texture.width)
+		renderHeight := f32(shadow_target.texture.height)
+		// rl.BeginShaderMode(blur_shader)
+		// rl.SetShaderValue(
+		// 	blur_shader,
+		// 	rl.GetShaderLocation(blur_shader, "renderWidth"),
+		// 	&renderWidth,
+		// 	.FLOAT,
+		// )
+		// rl.SetShaderValue(
+		// 	blur_shader,
+		// 	rl.GetShaderLocation(blur_shader, "renderHeight"),
+		// 	&renderHeight,
+		// 	.FLOAT,
+		// )
+		rl.DrawTexturePro(
+			shadow_target.texture,
+			{0, 0, renderWidth, -renderHeight},
+			{0, 0, f32(texture_width), f32(texture_height)},
+			{0, 0},
+			0,
+			rl.BLACK,
+		)
 		rl.DrawTextEx(
 			is_warning ? timer_warning_font : timer_font,
 			strings.unsafe_string_to_cstring(timer_text),
@@ -405,6 +491,7 @@ draw_timer :: proc() -> bool {
 			timer_options.font_spacing,
 			is_warning ? rl.RED : rl.WHITE,
 		)
+		// rl.EndShaderMode()
 		rl.EndTextureMode()
 	}
 
@@ -480,6 +567,7 @@ main :: proc() {
 		warning_font_size           = DEFAULT_WARNING_FONT_SIZE,
 		font_spacing                = DEFAULT_FONT_SPACING,
 		edge_margin_pixels          = DEFAULT_EDGE_BUFFER_PIXELS,
+		shadow_thickness            = DEFAULT_SHADOW_THICKNESS,
 	}
 
 	loaded_options, success := load_ini_file()
@@ -490,9 +578,17 @@ main :: proc() {
 	update_timer_options(loaded_options, true)
 
 	current_time := time.diff(now, timer_options.timer_end)
+	ok: bool
 	if current_time < 0 {
-		fmt.eprintln("End time has already passed!")
-		return
+		hr, mn, sc := time.clock(timer_options.timer_end)
+		timer_options.timer_end, ok = time.components_to_time(
+			time.year(now),
+			time.month(now),
+			time.day(now) + 1, // (24 * time.Hour),
+			hr,
+			mn,
+			sc,
+		)
 	}
 
 	// Open window
@@ -501,11 +597,15 @@ main :: proc() {
 	rl.InitWindow(640, 480, "Timer")
 	defer rl.CloseWindow()
 	rl.SetWindowState({.WINDOW_UNDECORATED})
+	// rl.SetWindowMonitor(timer_options.monitor)
 
 	// Configure render texture
 	render_target = rl.LoadRenderTexture(640, 480)
+	shadow_target = rl.LoadRenderTexture(640, 480)
 	defer rl.UnloadRenderTexture(render_target)
-	rl.SetTextureFilter(render_target.texture, .BILINEAR)
+	defer rl.UnloadRenderTexture(shadow_target)
+	rl.SetTextureFilter(render_target.texture, .ANISOTROPIC_4X)
+	rl.SetTextureFilter(shadow_target.texture, .POINT)
 	rl.SetTargetFPS(60)
 
 	// Load fonts
@@ -521,6 +621,7 @@ main :: proc() {
 		nil,
 		0,
 	)
+	blur_shader = rl.LoadShader(nil, "blur.fs")
 
 	// Init audio device and load audio
 	rl.InitAudioDevice()
